@@ -129,6 +129,57 @@ func findNotifications() -> [NotifInfo] {
     return results
 }
 
+func axTitle(of element: AXUIElement) -> String? {
+    var ref: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(element, kAXTitleAttribute as CFString, &ref) == .success else { return nil }
+    return ref as? String
+}
+
+func axDescription(of element: AXUIElement) -> String? {
+    var ref: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(element, kAXDescriptionAttribute as CFString, &ref) == .success else { return nil }
+    return ref as? String
+}
+
+func findShowLessButton(_ element: AXUIElement, depth: Int = 0, maxDepth: Int = 8) -> AXUIElement? {
+    if depth > maxDepth { return nil }
+
+    if axRole(of: element) == "AXButton" {
+        let title = axTitle(of: element) ?? ""
+        let desc = axDescription(of: element) ?? ""
+        if title.contains("간략히 보기") || desc.contains("간략히 보기")
+            || title.contains("Show Less") || desc.contains("Show Less") {
+            return element
+        }
+    }
+
+    for child in axChildren(of: element) {
+        if let found = findShowLessButton(child, depth: depth + 1, maxDepth: maxDepth) {
+            return found
+        }
+    }
+    return nil
+}
+
+func collapseNotifications() {
+    let state = NavState.shared
+    state.reset()
+
+    guard let ncApp = getNotificationCenterApp() else {
+        log("접기: NotificationCenter 없음")
+        return
+    }
+
+    for window in axChildren(of: ncApp) {
+        if let button = findShowLessButton(window) {
+            let result = axPerformAction("AXPress", on: button)
+            log("간략히 보기 클릭: \(result)")
+            return
+        }
+    }
+    log("간략히 보기 버튼 없음")
+}
+
 func clickNotification(_ notif: NotifInfo) -> String {
     // AXPress 직접 시도
     if axPerformAction("AXPress", on: notif.element) {
@@ -259,21 +310,24 @@ struct HotKeyConfig {
     static let defaultModifier = UInt32(controlKey)
     static let defaultKeyCode = UInt32(kVK_Return)
 
-    static func load() -> HotKeyConfig {
+    static func load(prefix: String = "hotkey") -> HotKeyConfig {
         let ud = UserDefaults.standard
-        if ud.object(forKey: "hotkey_modifier") != nil {
+        if ud.object(forKey: "\(prefix)_modifier") != nil {
             return HotKeyConfig(
-                modifier: UInt32(ud.integer(forKey: "hotkey_modifier")),
-                keyCode: UInt32(ud.integer(forKey: "hotkey_keyCode"))
+                modifier: UInt32(ud.integer(forKey: "\(prefix)_modifier")),
+                keyCode: UInt32(ud.integer(forKey: "\(prefix)_keyCode"))
             )
+        }
+        if prefix == "collapse_hotkey" {
+            return HotKeyConfig(modifier: UInt32(controlKey), keyCode: UInt32(kVK_ANSI_Backslash))
         }
         return HotKeyConfig(modifier: defaultModifier, keyCode: defaultKeyCode)
     }
 
-    func save() {
+    func save(prefix: String = "hotkey") {
         let ud = UserDefaults.standard
-        ud.set(Int(modifier), forKey: "hotkey_modifier")
-        ud.set(Int(keyCode), forKey: "hotkey_keyCode")
+        ud.set(Int(modifier), forKey: "\(prefix)_modifier")
+        ud.set(Int(keyCode), forKey: "\(prefix)_keyCode")
     }
 
     func displayString() -> String {
@@ -558,8 +612,11 @@ class ShortcutCaptureWindow: NSWindow {
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     var hotKeyRef: EventHotKeyRef?
+    var collapseHotKeyRef: EventHotKeyRef?
     var hotKeyConfig = HotKeyConfig.load()
+    var collapseHotKeyConfig = HotKeyConfig.load(prefix: "collapse_hotkey")
     var currentShortcutItem: NSMenuItem!
+    var collapseShortcutItem: NSMenuItem!
     var captureWindow: ShortcutCaptureWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -567,11 +624,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let button = statusItem.button { button.title = "🔔" }
 
         let menu = NSMenu()
-        currentShortcutItem = NSMenuItem(title: "현재 단축키: \(hotKeyConfig.displayString())", action: nil, keyEquivalent: "")
+        currentShortcutItem = NSMenuItem(title: "열기 단축키: \(hotKeyConfig.displayString())", action: nil, keyEquivalent: "")
         menu.addItem(currentShortcutItem)
-        let changeItem = NSMenuItem(title: "단축키 변경...", action: #selector(openShortcutWindow), keyEquivalent: "")
+        let changeItem = NSMenuItem(title: "열기 단축키 변경...", action: #selector(openShortcutWindow), keyEquivalent: "")
         changeItem.target = self
         menu.addItem(changeItem)
+        menu.addItem(NSMenuItem.separator())
+        collapseShortcutItem = NSMenuItem(title: "접기 단축키: \(collapseHotKeyConfig.displayString())", action: nil, keyEquivalent: "")
+        menu.addItem(collapseShortcutItem)
+        let changeCollapseItem = NSMenuItem(title: "접기 단축키 변경...", action: #selector(openCollapseShortcutWindow), keyEquivalent: "")
+        changeCollapseItem.target = self
+        menu.addItem(changeCollapseItem)
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "종료", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         statusItem.menu = menu
@@ -580,10 +643,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         log("접근성 권한: \(AXIsProcessTrustedWithOptions(options))")
 
         registerHotKey()
+        registerCollapseHotKey()
 
         var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-        InstallEventHandler(GetApplicationEventTarget(), { (_, _, _) -> OSStatus in
-            DispatchQueue.main.async { handleCtrlEnter() }
+        InstallEventHandler(GetApplicationEventTarget(), { (_, event, _) -> OSStatus in
+            var hotKeyID = EventHotKeyID()
+            GetEventParameter(event!, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil, MemoryLayout<EventHotKeyID>.size, nil, &hotKeyID)
+            DispatchQueue.main.async {
+                if hotKeyID.id == 1 {
+                    handleCtrlEnter()
+                } else if hotKeyID.id == 2 {
+                    collapseNotifications()
+                }
+            }
             return noErr
         }, 1, &eventType, nil, nil)
 
@@ -609,20 +681,52 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let hotKeyID = EventHotKeyID(signature: OSType(0x4E434C4B), id: 1)
         RegisterEventHotKey(hotKeyConfig.keyCode, hotKeyConfig.modifier, hotKeyID, GetApplicationEventTarget(), 0, &hotKeyRef)
-        log("HotKey 등록: \(hotKeyConfig.displayString())")
+        log("열기 HotKey 등록: \(hotKeyConfig.displayString())")
+    }
+
+    func registerCollapseHotKey() {
+        if let ref = collapseHotKeyRef {
+            UnregisterEventHotKey(ref)
+            collapseHotKeyRef = nil
+        }
+        let hotKeyID = EventHotKeyID(signature: OSType(0x4E434C4B), id: 2)
+        RegisterEventHotKey(collapseHotKeyConfig.keyCode, collapseHotKeyConfig.modifier, hotKeyID, GetApplicationEventTarget(), 0, &collapseHotKeyRef)
+        log("접기 HotKey 등록: \(collapseHotKeyConfig.displayString())")
     }
 
     @objc func openShortcutWindow() {
         NSApp.setActivationPolicy(.regular)
 
         let window = ShortcutCaptureWindow()
+        window.title = "열기 단축키 변경"
         window.onApply = { [weak self] config in
             guard let self = self else { return }
             self.hotKeyConfig = config
             self.hotKeyConfig.save()
             self.registerHotKey()
-            self.currentShortcutItem.title = "현재 단축키: \(self.hotKeyConfig.displayString())"
-            log("단축키 변경: \(self.hotKeyConfig.displayString())")
+            self.currentShortcutItem.title = "열기 단축키: \(self.hotKeyConfig.displayString())"
+            log("열기 단축키 변경: \(self.hotKeyConfig.displayString())")
+            NSApp.setActivationPolicy(.accessory)
+        }
+        window.delegate = self
+        window.makeKeyAndOrderFront(nil)
+        window.startCapture()
+        NSApp.activate(ignoringOtherApps: true)
+        captureWindow = window
+    }
+
+    @objc func openCollapseShortcutWindow() {
+        NSApp.setActivationPolicy(.regular)
+
+        let window = ShortcutCaptureWindow()
+        window.title = "접기 단축키 변경"
+        window.onApply = { [weak self] config in
+            guard let self = self else { return }
+            self.collapseHotKeyConfig = config
+            self.collapseHotKeyConfig.save(prefix: "collapse_hotkey")
+            self.registerCollapseHotKey()
+            self.collapseShortcutItem.title = "접기 단축키: \(self.collapseHotKeyConfig.displayString())"
+            log("접기 단축키 변경: \(self.collapseHotKeyConfig.displayString())")
             NSApp.setActivationPolicy(.accessory)
         }
         window.delegate = self
