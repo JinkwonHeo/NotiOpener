@@ -15,6 +15,9 @@ mkdir -p "${MACOS_DIR}" "${RESOURCES_DIR}"
 
 cp "${APP_NAME}" "${MACOS_DIR}/"
 
+echo "==> Signing ${BUNDLE}..."
+codesign --force --deep --sign - "${BUNDLE}"
+
 cat > "${BUNDLE}/Contents/Info.plist" << 'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
