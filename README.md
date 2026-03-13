@@ -20,7 +20,11 @@ macOS 알림 배너를 키보드만으로 열어보는 메뉴바 앱.
 
 1. zip 해제
 2. `NotiOpener.app`을 `/Applications` 폴더로 드래그
-3. 더블클릭으로 실행
+3. "손상되었기 때문에 열 수 없습니다" 경고가 뜨면 터미널에서 실행:
+   ```bash
+   xattr -cr /Applications/NotiOpener.app
+   ```
+4. 더블클릭으로 실행
 
 > 최초 실행 시 **손쉬운 사용(Accessibility)** 권한을 요청합니다. 허용해주세요.
 
