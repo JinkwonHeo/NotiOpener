@@ -170,19 +170,11 @@ func findClearableElements(_ element: AXUIElement, depth: Int = 0, maxDepth: Int
 
     // AlertStack or individual alert with Clear All action
     if subrole == "AXNotificationCenterAlertStack" || subrole == "AXNotificationCenterAlert" || subrole == "AXNotificationCenterBanner" {
-        // "Clear All" 또는 개별 close 액션 찾기
-        let hasClear = actions.contains { $0.contains("Clear") || $0.contains("Close") }
+        let hasClear = actions.contains { $0.contains("Clear") || $0.contains("Close") || $0.contains("지우기") || $0.contains("닫기") }
         if hasClear {
             results.append(element)
             return results
         }
-    }
-
-    // desc에 "Clear Notifications" 포함된 메뉴 버튼
-    let desc = axDescription(of: element) ?? ""
-    if desc.contains("Clear Notification") && actions.contains("AXShowMenu") {
-        results.append(element)
-        return results
     }
 
     for child in axChildren(of: element) {
@@ -205,9 +197,8 @@ func clearAllNotifications() {
         let elements = findClearableElements(window)
         for el in elements {
             let actions = axActionNames(of: el)
-            // "Clear" 또는 "Close" 액션 시도 (AXPress 제외)
             for action in actions {
-                if action.contains("Clear") || action.contains("Close") {
+                if action.contains("Clear") || action.contains("Close") || action.contains("지우기") || action.contains("닫기") {
                     if axPerformAction(action, on: el) {
                         cleared += 1
                         log("액션 실행: \(action)")
