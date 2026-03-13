@@ -14,26 +14,28 @@ macOS 알림 배너를 키보드만으로 열어보는 메뉴바 앱.
 
 ## Install
 
+### Download (권장)
+
+[**NotiOpener.zip 다운로드 (v1.0.0)**](https://github.com/JinkwonHeo/NotiOpener/releases/download/v1.0.0/NotiOpener.zip)
+
+1. zip 해제
+2. `NotiOpener.app`을 `/Applications` 폴더로 드래그
+3. 더블클릭으로 실행
+
+> 최초 실행 시 **손쉬운 사용(Accessibility)** 권한을 요청합니다. 허용해주세요.
+
 ### Build from source
 
 ```bash
-git clone https://github.com/HeoJinkwon/NotiOpener.git
+git clone https://github.com/JinkwonHeo/NotiOpener.git
 cd NotiOpener
-swiftc main.swift -o NotiOpener -framework Cocoa -framework Carbon
+chmod +x build.sh
+./build.sh
 ```
 
-### Run
-
-```bash
-./NotiOpener
-```
-
-최초 실행 시 **손쉬운 사용(Accessibility)** 권한을 요청합니다. 허용해주세요.
-
-백그라운드 실행:
-```bash
-nohup ./NotiOpener &
-```
+빌드 결과:
+- `NotiOpener.app` — 더블클릭 또는 `/Applications`에 드래그
+- `NotiOpener.zip` — 배포용
 
 ## Usage
 

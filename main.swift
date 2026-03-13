@@ -1,7 +1,7 @@
 import Cocoa
 import Carbon
 
-let logFile = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop/notiopener.log")
+let logFile = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/NotiOpener.log")
 
 func log(_ msg: String) {
     let line = "\(Date()): \(msg)\n"
