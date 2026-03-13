@@ -6,8 +6,13 @@ BUNDLE="${APP_NAME}.app"
 MACOS_DIR="${BUNDLE}/Contents/MacOS"
 RESOURCES_DIR="${BUNDLE}/Contents/Resources"
 
-echo "==> Compiling ${APP_NAME}..."
-swiftc main.swift -o "${APP_NAME}" -framework Cocoa -framework Carbon -O
+MIN_MACOS="13.0"
+
+echo "==> Compiling ${APP_NAME} (Universal Binary, macOS ${MIN_MACOS}+)..."
+swiftc main.swift -o "${APP_NAME}-arm64" -framework Cocoa -framework Carbon -O -target arm64-apple-macos${MIN_MACOS}
+swiftc main.swift -o "${APP_NAME}-x86_64" -framework Cocoa -framework Carbon -O -target x86_64-apple-macos${MIN_MACOS}
+lipo -create -output "${APP_NAME}" "${APP_NAME}-arm64" "${APP_NAME}-x86_64"
+rm -f "${APP_NAME}-arm64" "${APP_NAME}-x86_64"
 
 echo "==> Creating ${BUNDLE}..."
 rm -rf "${BUNDLE}"
