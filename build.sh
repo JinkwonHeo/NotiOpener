@@ -5,6 +5,7 @@ APP_NAME="NotiOpener"
 BUNDLE="${APP_NAME}.app"
 MACOS_DIR="${BUNDLE}/Contents/MacOS"
 RESOURCES_DIR="${BUNDLE}/Contents/Resources"
+DIST_DIR="dist"
 
 echo "==> Compiling ${APP_NAME}..."
 swiftc main.swift -o "${APP_NAME}" -framework Cocoa -framework Carbon -O
@@ -46,11 +47,22 @@ cat > "${BUNDLE}/Contents/Info.plist" << 'PLIST'
 </plist>
 PLIST
 
-echo "==> Creating ${APP_NAME}.zip..."
-rm -f "${APP_NAME}.zip"
-ditto -c -k --keepParent "${BUNDLE}" "${APP_NAME}.zip"
+echo "==> Packaging for distribution..."
+rm -rf "${DIST_DIR}" "${APP_NAME}.zip"
+mkdir -p "${DIST_DIR}"
+cp -R "${BUNDLE}" "${DIST_DIR}/"
+
+cat > "${DIST_DIR}/install.sh" << 'INSTALL'
+#!/bin/bash
+cd "$(dirname "$0")"
+xattr -cr NotiOpener.app
+open NotiOpener.app
+INSTALL
+
+ditto -c -k --keepParent "${DIST_DIR}" "${APP_NAME}.zip"
+rm -rf "${DIST_DIR}"
 
 echo ""
 echo "Done!"
 echo "  ${BUNDLE}       — 더블클릭 또는 /Applications에 드래그"
-echo "  ${APP_NAME}.zip — GitHub Releases 업로드용"
+echo "  ${APP_NAME}.zip — GitHub Releases 업로드용 (install.sh 포함)"
