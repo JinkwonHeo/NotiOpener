@@ -161,6 +161,64 @@ func findShowLessButton(_ element: AXUIElement, depth: Int = 0, maxDepth: Int = 
     return nil
 }
 
+func findClearableElements(_ element: AXUIElement, depth: Int = 0, maxDepth: Int = 8) -> [AXUIElement] {
+    if depth > maxDepth { return [] }
+    var results: [AXUIElement] = []
+
+    let subrole = axSubrole(of: element) ?? ""
+    let actions = axActionNames(of: element)
+
+    // AlertStack or individual alert with Clear All action
+    if subrole == "AXNotificationCenterAlertStack" || subrole == "AXNotificationCenterAlert" || subrole == "AXNotificationCenterBanner" {
+        // "Clear All" 또는 개별 close 액션 찾기
+        let hasClear = actions.contains { $0.contains("Clear") || $0.contains("Close") }
+        if hasClear {
+            results.append(element)
+            return results
+        }
+    }
+
+    // desc에 "Clear Notifications" 포함된 메뉴 버튼
+    let desc = axDescription(of: element) ?? ""
+    if desc.contains("Clear Notification") && actions.contains("AXShowMenu") {
+        results.append(element)
+        return results
+    }
+
+    for child in axChildren(of: element) {
+        results.append(contentsOf: findClearableElements(child, depth: depth + 1, maxDepth: maxDepth))
+    }
+    return results
+}
+
+func clearAllNotifications() {
+    let state = NavState.shared
+    state.reset()
+
+    guard let ncApp = getNotificationCenterApp() else {
+        log("지우기: NotificationCenter 없음")
+        return
+    }
+
+    var cleared = 0
+    for window in axChildren(of: ncApp) {
+        let elements = findClearableElements(window)
+        for el in elements {
+            let actions = axActionNames(of: el)
+            // "Clear" 또는 "Close" 액션 시도 (AXPress 제외)
+            for action in actions {
+                if action.contains("Clear") || action.contains("Close") {
+                    if axPerformAction(action, on: el) {
+                        cleared += 1
+                        log("액션 실행: \(action)")
+                    }
+                }
+            }
+        }
+    }
+    log("알림 지우기: \(cleared)개 처리")
+}
+
 func collapseNotifications() {
     let state = NavState.shared
     state.reset()
@@ -320,6 +378,9 @@ struct HotKeyConfig {
         }
         if prefix == "collapse_hotkey" {
             return HotKeyConfig(modifier: UInt32(controlKey), keyCode: UInt32(kVK_ANSI_Backslash))
+        }
+        if prefix == "clear_hotkey" {
+            return HotKeyConfig(modifier: UInt32(controlKey), keyCode: UInt32(kVK_Delete))
         }
         return HotKeyConfig(modifier: defaultModifier, keyCode: defaultKeyCode)
     }
@@ -613,10 +674,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     var hotKeyRef: EventHotKeyRef?
     var collapseHotKeyRef: EventHotKeyRef?
+    var clearHotKeyRef: EventHotKeyRef?
     var hotKeyConfig = HotKeyConfig.load()
     var collapseHotKeyConfig = HotKeyConfig.load(prefix: "collapse_hotkey")
+    var clearHotKeyConfig = HotKeyConfig.load(prefix: "clear_hotkey")
     var currentShortcutItem: NSMenuItem!
     var collapseShortcutItem: NSMenuItem!
+    var clearShortcutItem: NSMenuItem!
     var captureWindow: ShortcutCaptureWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -636,6 +700,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         changeCollapseItem.target = self
         menu.addItem(changeCollapseItem)
         menu.addItem(NSMenuItem.separator())
+        clearShortcutItem = NSMenuItem(title: "지우기 단축키: \(clearHotKeyConfig.displayString())", action: nil, keyEquivalent: "")
+        menu.addItem(clearShortcutItem)
+        let changeClearItem = NSMenuItem(title: "지우기 단축키 변경...", action: #selector(openClearShortcutWindow), keyEquivalent: "")
+        changeClearItem.target = self
+        menu.addItem(changeClearItem)
+        menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "종료", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         statusItem.menu = menu
 
@@ -644,6 +714,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         registerHotKey()
         registerCollapseHotKey()
+        registerClearHotKey()
 
         var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         InstallEventHandler(GetApplicationEventTarget(), { (_, event, _) -> OSStatus in
@@ -654,6 +725,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     handleCtrlEnter()
                 } else if hotKeyID.id == 2 {
                     collapseNotifications()
+                } else if hotKeyID.id == 3 {
+                    clearAllNotifications()
                 }
             }
             return noErr
@@ -694,6 +767,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         log("접기 HotKey 등록: \(collapseHotKeyConfig.displayString())")
     }
 
+    func registerClearHotKey() {
+        if let ref = clearHotKeyRef {
+            UnregisterEventHotKey(ref)
+            clearHotKeyRef = nil
+        }
+        let hotKeyID = EventHotKeyID(signature: OSType(0x4E434C4B), id: 3)
+        RegisterEventHotKey(clearHotKeyConfig.keyCode, clearHotKeyConfig.modifier, hotKeyID, GetApplicationEventTarget(), 0, &clearHotKeyRef)
+        log("지우기 HotKey 등록: \(clearHotKeyConfig.displayString())")
+    }
+
     @objc func openShortcutWindow() {
         NSApp.setActivationPolicy(.regular)
 
@@ -706,6 +789,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self.registerHotKey()
             self.currentShortcutItem.title = "열기 단축키: \(self.hotKeyConfig.displayString())"
             log("열기 단축키 변경: \(self.hotKeyConfig.displayString())")
+            NSApp.setActivationPolicy(.accessory)
+        }
+        window.delegate = self
+        window.makeKeyAndOrderFront(nil)
+        window.startCapture()
+        NSApp.activate(ignoringOtherApps: true)
+        captureWindow = window
+    }
+
+    @objc func openClearShortcutWindow() {
+        NSApp.setActivationPolicy(.regular)
+
+        let window = ShortcutCaptureWindow()
+        window.title = "지우기 단축키 변경"
+        window.onApply = { [weak self] config in
+            guard let self = self else { return }
+            self.clearHotKeyConfig = config
+            self.clearHotKeyConfig.save(prefix: "clear_hotkey")
+            self.registerClearHotKey()
+            self.clearShortcutItem.title = "지우기 단축키: \(self.clearHotKeyConfig.displayString())"
+            log("지우기 단축키 변경: \(self.clearHotKeyConfig.displayString())")
             NSApp.setActivationPolicy(.accessory)
         }
         window.delegate = self
