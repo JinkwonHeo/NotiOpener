@@ -7,7 +7,7 @@ MACOS_DIR="${BUNDLE}/Contents/MacOS"
 RESOURCES_DIR="${BUNDLE}/Contents/Resources"
 
 echo "==> Compiling ${APP_NAME}..."
-swiftc main.swift -o "${APP_NAME}" -framework Cocoa -framework Carbon -O
+swiftc main.swift -o "${APP_NAME}" -framework Cocoa -framework Carbon -O -target arm64-apple-macos13.0
 
 echo "==> Creating ${BUNDLE}..."
 rm -rf "${BUNDLE}"
