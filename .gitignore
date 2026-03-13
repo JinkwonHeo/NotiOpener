@@ -1,5 +1,6 @@
 NotiOpener
 NotiOpener.app/
+dist/
 *.zip
 *.log
 .DS_Store
