@@ -418,8 +418,9 @@ class PreviewOverlay {
             windows.append(w)
         }
 
-        // 3초 후 자동 사라짐
-        hideTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] _ in
+        // 설정된 시간 후 자동 사라짐
+        let duration = PreviewOverlay.loadDuration()
+        hideTimer = Timer.scheduledTimer(withTimeInterval: duration, repeats: false) { [weak self] _ in
             self?.hide()
         }
 
@@ -431,6 +432,16 @@ class PreviewOverlay {
         hideTimer = nil
         for w in windows { w.orderOut(nil) }
         windows.removeAll()
+    }
+
+    static func loadDuration() -> TimeInterval {
+        let ud = UserDefaults.standard
+        let val = ud.double(forKey: "preview_duration")
+        return val > 0 ? val : 3.0
+    }
+
+    static func saveDuration(_ duration: TimeInterval) {
+        UserDefaults.standard.set(duration, forKey: "preview_duration")
     }
 }
 
@@ -814,6 +825,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var collapseShortcutItem: NSMenuItem!
     var clearShortcutItem: NSMenuItem!
     var previewShortcutItem: NSMenuItem!
+    var previewDurationItem: NSMenuItem!
     var captureWindow: ShortcutCaptureWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -844,6 +856,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let changePreviewItem = NSMenuItem(title: "미리보기 단축키 변경...", action: #selector(openPreviewShortcutWindow), keyEquivalent: "")
         changePreviewItem.target = self
         menu.addItem(changePreviewItem)
+        let dur = PreviewOverlay.loadDuration()
+        previewDurationItem = NSMenuItem(title: "미리보기 표시시간: \(String(format: "%.1f", dur))초", action: nil, keyEquivalent: "")
+        menu.addItem(previewDurationItem)
+        let changeDurationItem = NSMenuItem(title: "미리보기 표시시간 변경...", action: #selector(openDurationWindow), keyEquivalent: "")
+        changeDurationItem.target = self
+        menu.addItem(changeDurationItem)
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "종료", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         statusItem.menu = menu
@@ -927,6 +945,93 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let hotKeyID = EventHotKeyID(signature: OSType(0x4E434C4B), id: 4)
         RegisterEventHotKey(previewHotKeyConfig.keyCode, previewHotKeyConfig.modifier, hotKeyID, GetApplicationEventTarget(), 0, &previewHotKeyRef)
         log("미리보기 HotKey 등록: \(previewHotKeyConfig.displayString())")
+    }
+
+    @objc func openDurationWindow() {
+        NSApp.setActivationPolicy(.regular)
+
+        let width: CGFloat = 280
+        let height: CGFloat = 140
+        let screen = NSScreen.main!
+        let x = (screen.frame.width - width) / 2
+        let y = (screen.frame.height - height) / 2
+        let rect = NSRect(x: x, y: y, width: width, height: height)
+
+        let win = NSWindow(contentRect: rect, styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        win.title = "미리보기 표시시간"
+        win.level = .floating
+        win.isReleasedWhenClosed = false
+
+        let cv = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
+        win.contentView = cv
+
+        let label = NSTextField(labelWithString: "표시시간 (초)")
+        label.font = NSFont.systemFont(ofSize: 14)
+        label.frame = NSRect(x: 20, y: height - 45, width: 120, height: 24)
+        cv.addSubview(label)
+
+        let stepper = NSStepper()
+        stepper.minValue = 1
+        stepper.maxValue = 30
+        stepper.increment = 0.5
+        stepper.doubleValue = PreviewOverlay.loadDuration()
+        stepper.frame = NSRect(x: width - 50, y: height - 80, width: 20, height: 24)
+        cv.addSubview(stepper)
+
+        let valueLabel = NSTextField(labelWithString: String(format: "%.1f", stepper.doubleValue))
+        valueLabel.font = NSFont.monospacedSystemFont(ofSize: 20, weight: .medium)
+        valueLabel.alignment = .center
+        valueLabel.frame = NSRect(x: 60, y: height - 85, width: width - 130, height: 30)
+        cv.addSubview(valueLabel)
+
+        stepper.target = self
+        stepper.tag = 999
+        objc_setAssociatedObject(stepper, "valueLabel", valueLabel, .OBJC_ASSOCIATION_RETAIN)
+        stepper.action = #selector(stepperChanged(_:))
+
+        let applyBtn = NSButton(title: "적용", target: self, action: #selector(applyDuration(_:)))
+        applyBtn.bezelStyle = .rounded
+        applyBtn.frame = NSRect(x: width / 2 - 100, y: 15, width: 90, height: 32)
+        applyBtn.keyEquivalent = "\r"
+        objc_setAssociatedObject(applyBtn, "stepper", stepper, .OBJC_ASSOCIATION_RETAIN)
+        objc_setAssociatedObject(applyBtn, "window", win, .OBJC_ASSOCIATION_RETAIN)
+        cv.addSubview(applyBtn)
+
+        let cancelBtn = NSButton(title: "취소", target: self, action: #selector(cancelDuration(_:)))
+        cancelBtn.bezelStyle = .rounded
+        cancelBtn.frame = NSRect(x: width / 2 + 10, y: 15, width: 90, height: 32)
+        cancelBtn.keyEquivalent = "\u{1b}"
+        objc_setAssociatedObject(cancelBtn, "window", win, .OBJC_ASSOCIATION_RETAIN)
+        cv.addSubview(cancelBtn)
+
+        win.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc func stepperChanged(_ sender: NSStepper) {
+        if let label = objc_getAssociatedObject(sender, "valueLabel") as? NSTextField {
+            label.stringValue = String(format: "%.1f", sender.doubleValue)
+        }
+    }
+
+    @objc func applyDuration(_ sender: NSButton) {
+        if let stepper = objc_getAssociatedObject(sender, "stepper") as? NSStepper {
+            let duration = stepper.doubleValue
+            PreviewOverlay.saveDuration(duration)
+            previewDurationItem.title = "미리보기 표시시간: \(String(format: "%.1f", duration))초"
+            log("미리보기 표시시간 변경: \(duration)초")
+        }
+        if let win = objc_getAssociatedObject(sender, "window") as? NSWindow {
+            win.close()
+        }
+        NSApp.setActivationPolicy(.accessory)
+    }
+
+    @objc func cancelDuration(_ sender: NSButton) {
+        if let win = objc_getAssociatedObject(sender, "window") as? NSWindow {
+            win.close()
+        }
+        NSApp.setActivationPolicy(.accessory)
     }
 
     @objc func openPreviewShortcutWindow() {
