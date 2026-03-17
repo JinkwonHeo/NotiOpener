@@ -141,6 +141,44 @@ func axDescription(of element: AXUIElement) -> String? {
     return ref as? String
 }
 
+// MARK: - 알림 내용 읽기 (AXDescription 파싱)
+
+struct NotifContent {
+    let appName: String
+    let title: String
+    let subtitle: String
+    let body: String
+}
+
+func axDescriptionValue(of element: AXUIElement) -> String? {
+    var ref: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(element, kAXDescriptionAttribute as CFString, &ref) == .success else { return nil }
+    return ref as? String
+}
+
+func parseNotifContent(_ element: AXUIElement) -> NotifContent? {
+    guard let desc = axDescriptionValue(of: element), !desc.isEmpty else { return nil }
+    // desc 형식: "앱이름, 제목, 서브타이틀, 내용, 스택" (쉼표 구분)
+    let parts = desc.components(separatedBy: ", ")
+    guard parts.count >= 2 else { return nil }
+    let appName = parts[0]
+    let title = parts[1]
+    let subtitle = parts.count >= 3 ? parts[2] : ""
+    let body = parts.count >= 4 ? parts[3] : ""
+    return NotifContent(appName: appName, title: title, subtitle: subtitle, body: body)
+}
+
+func readAllNotifContents() -> [(NotifInfo, NotifContent)] {
+    let notifs = findNotifications()
+    var results: [(NotifInfo, NotifContent)] = []
+    for notif in notifs {
+        if let content = parseNotifContent(notif.element) {
+            results.append((notif, content))
+        }
+    }
+    return results
+}
+
 func findShowLessButton(_ element: AXUIElement, depth: Int = 0, maxDepth: Int = 8) -> AXUIElement? {
     if depth > maxDepth { return nil }
 
@@ -319,6 +357,95 @@ class BorderView: NSView {
     }
 }
 
+// MARK: - 미리보기 오버레이
+
+class PreviewOverlay {
+    static let shared = PreviewOverlay()
+    var windows: [NSWindow] = []
+    var hideTimer: Timer?
+
+    func show(contents: [(NotifInfo, NotifContent)]) {
+        hide()
+        guard !contents.isEmpty else { return }
+        guard let mainScreen = NSScreen.screens.first else { return }
+        let mainHeight = mainScreen.frame.height
+        let font = NSFont.systemFont(ofSize: 11, weight: .regular)
+        let attrs: [NSAttributedString.Key: Any] = [.font: font]
+        let maxTextWidth: CGFloat = 300
+        let padding: CGFloat = 8
+
+        for (notif, content) in contents {
+            var text = "[\(content.appName)] \(content.title)"
+            if !content.subtitle.isEmpty { text += "\n\(content.subtitle)" }
+            if !content.body.isEmpty { text += "\n\(content.body)" }
+
+            let textSize = (text as NSString).boundingRect(
+                with: NSSize(width: maxTextWidth, height: 1000),
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                attributes: attrs
+            ).size
+
+            let winWidth = min(textSize.width + padding * 2, maxTextWidth + padding * 2)
+            let winHeight = textSize.height + padding * 2
+
+            // 각 배너의 왼쪽에 세로 중앙 맞춤 배치
+            let flippedY = mainHeight - notif.y - notif.height
+            let originX = notif.x - winWidth - 8
+            let originY = flippedY + (notif.height - winHeight) / 2
+
+            let rect = NSRect(x: originX, y: originY, width: winWidth, height: winHeight)
+
+            let w = NSWindow(contentRect: rect, styleMask: .borderless, backing: .buffered, defer: false)
+            w.level = .screenSaver
+            w.isOpaque = false
+            w.backgroundColor = .clear
+            w.ignoresMouseEvents = true
+            w.hasShadow = true
+
+            let bgView = PreviewBackgroundView(frame: NSRect(origin: .zero, size: rect.size))
+            w.contentView = bgView
+
+            let label = NSTextField(wrappingLabelWithString: text)
+            label.font = font
+            label.textColor = .white
+            label.backgroundColor = .clear
+            label.isBezeled = false
+            label.isEditable = false
+            label.frame = NSRect(x: padding, y: padding, width: winWidth - padding * 2, height: winHeight - padding * 2)
+            bgView.addSubview(label)
+
+            w.orderFront(nil)
+            windows.append(w)
+        }
+
+        // 3초 후 자동 사라짐
+        hideTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] _ in
+            self?.hide()
+        }
+
+        log("미리보기 표시: \(contents.count)개 알림")
+    }
+
+    func hide() {
+        hideTimer?.invalidate()
+        hideTimer = nil
+        for w in windows { w.orderOut(nil) }
+        windows.removeAll()
+    }
+}
+
+class PreviewBackgroundView: NSView {
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        let path = NSBezierPath(roundedRect: bounds, xRadius: 10, yRadius: 10)
+        NSColor(calibratedWhite: 0.1, alpha: 0.85).setFill()
+        path.fill()
+        NSColor(calibratedWhite: 0.4, alpha: 0.6).setStroke()
+        path.lineWidth = 1
+        path.stroke()
+    }
+}
+
 // MARK: - 네비게이션 상태
 
 class NavState {
@@ -372,6 +499,9 @@ struct HotKeyConfig {
         }
         if prefix == "clear_hotkey" {
             return HotKeyConfig(modifier: UInt32(controlKey), keyCode: UInt32(kVK_Delete))
+        }
+        if prefix == "preview_hotkey" {
+            return HotKeyConfig(modifier: UInt32(controlKey), keyCode: UInt32(kVK_ANSI_P))
         }
         return HotKeyConfig(modifier: defaultModifier, keyCode: defaultKeyCode)
     }
@@ -541,6 +671,15 @@ func handleCtrlEnter() {
     }
 }
 
+func handlePreview() {
+    let contents = readAllNotifContents()
+    if contents.isEmpty {
+        log("미리보기: 알림 없음 또는 내용 없음")
+        return
+    }
+    PreviewOverlay.shared.show(contents: contents)
+}
+
 func selectCurrentNotification() {
     let state = NavState.shared
     guard state.isNavigating, state.currentIndex < state.notifications.count else {
@@ -666,12 +805,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var hotKeyRef: EventHotKeyRef?
     var collapseHotKeyRef: EventHotKeyRef?
     var clearHotKeyRef: EventHotKeyRef?
+    var previewHotKeyRef: EventHotKeyRef?
     var hotKeyConfig = HotKeyConfig.load()
     var collapseHotKeyConfig = HotKeyConfig.load(prefix: "collapse_hotkey")
     var clearHotKeyConfig = HotKeyConfig.load(prefix: "clear_hotkey")
+    var previewHotKeyConfig = HotKeyConfig.load(prefix: "preview_hotkey")
     var currentShortcutItem: NSMenuItem!
     var collapseShortcutItem: NSMenuItem!
     var clearShortcutItem: NSMenuItem!
+    var previewShortcutItem: NSMenuItem!
     var captureWindow: ShortcutCaptureWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -697,6 +839,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         changeClearItem.target = self
         menu.addItem(changeClearItem)
         menu.addItem(NSMenuItem.separator())
+        previewShortcutItem = NSMenuItem(title: "미리보기 단축키: \(previewHotKeyConfig.displayString())", action: nil, keyEquivalent: "")
+        menu.addItem(previewShortcutItem)
+        let changePreviewItem = NSMenuItem(title: "미리보기 단축키 변경...", action: #selector(openPreviewShortcutWindow), keyEquivalent: "")
+        changePreviewItem.target = self
+        menu.addItem(changePreviewItem)
+        menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "종료", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         statusItem.menu = menu
 
@@ -706,6 +854,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         registerHotKey()
         registerCollapseHotKey()
         registerClearHotKey()
+        registerPreviewHotKey()
 
         var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         InstallEventHandler(GetApplicationEventTarget(), { (_, event, _) -> OSStatus in
@@ -718,6 +867,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     collapseNotifications()
                 } else if hotKeyID.id == 3 {
                     clearAllNotifications()
+                } else if hotKeyID.id == 4 {
+                    handlePreview()
                 }
             }
             return noErr
@@ -766,6 +917,37 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let hotKeyID = EventHotKeyID(signature: OSType(0x4E434C4B), id: 3)
         RegisterEventHotKey(clearHotKeyConfig.keyCode, clearHotKeyConfig.modifier, hotKeyID, GetApplicationEventTarget(), 0, &clearHotKeyRef)
         log("지우기 HotKey 등록: \(clearHotKeyConfig.displayString())")
+    }
+
+    func registerPreviewHotKey() {
+        if let ref = previewHotKeyRef {
+            UnregisterEventHotKey(ref)
+            previewHotKeyRef = nil
+        }
+        let hotKeyID = EventHotKeyID(signature: OSType(0x4E434C4B), id: 4)
+        RegisterEventHotKey(previewHotKeyConfig.keyCode, previewHotKeyConfig.modifier, hotKeyID, GetApplicationEventTarget(), 0, &previewHotKeyRef)
+        log("미리보기 HotKey 등록: \(previewHotKeyConfig.displayString())")
+    }
+
+    @objc func openPreviewShortcutWindow() {
+        NSApp.setActivationPolicy(.regular)
+
+        let window = ShortcutCaptureWindow()
+        window.title = "미리보기 단축키 변경"
+        window.onApply = { [weak self] config in
+            guard let self = self else { return }
+            self.previewHotKeyConfig = config
+            self.previewHotKeyConfig.save(prefix: "preview_hotkey")
+            self.registerPreviewHotKey()
+            self.previewShortcutItem.title = "미리보기 단축키: \(self.previewHotKeyConfig.displayString())"
+            log("미리보기 단축키 변경: \(self.previewHotKeyConfig.displayString())")
+            NSApp.setActivationPolicy(.accessory)
+        }
+        window.delegate = self
+        window.makeKeyAndOrderFront(nil)
+        window.startCapture()
+        NSApp.activate(ignoringOtherApps: true)
+        captureWindow = window
     }
 
     @objc func openShortcutWindow() {
