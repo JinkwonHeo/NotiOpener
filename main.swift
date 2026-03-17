@@ -418,10 +418,14 @@ class PreviewOverlay {
             windows.append(w)
         }
 
-        // 설정된 시간 후 자동 사라짐
-        let duration = PreviewOverlay.loadDuration()
-        hideTimer = Timer.scheduledTimer(withTimeInterval: duration, repeats: false) { [weak self] _ in
-            self?.hide()
+        showTime = Date()
+
+        // 타이머 모드일 때만 자동 사라짐
+        if !PreviewOverlay.isHoldMode() {
+            let duration = PreviewOverlay.loadDuration()
+            hideTimer = Timer.scheduledTimer(withTimeInterval: duration, repeats: false) { [weak self] _ in
+                self?.hide()
+            }
         }
 
         log("미리보기 표시: \(contents.count)개 알림")
@@ -430,6 +434,7 @@ class PreviewOverlay {
     func hide() {
         hideTimer?.invalidate()
         hideTimer = nil
+        showTime = nil
         for w in windows { w.orderOut(nil) }
         windows.removeAll()
     }
@@ -442,6 +447,17 @@ class PreviewOverlay {
 
     static func saveDuration(_ duration: TimeInterval) {
         UserDefaults.standard.set(duration, forKey: "preview_duration")
+    }
+
+    var showTime: Date?
+
+    /// false = 타이머 모드 (기본), true = 홀드 모드
+    static func isHoldMode() -> Bool {
+        return UserDefaults.standard.bool(forKey: "preview_hold_mode")
+    }
+
+    static func setHoldMode(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: "preview_hold_mode")
     }
 }
 
@@ -826,6 +842,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var clearShortcutItem: NSMenuItem!
     var previewShortcutItem: NSMenuItem!
     var previewDurationItem: NSMenuItem!
+    var previewModeItem: NSMenuItem!
     var captureWindow: ShortcutCaptureWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -862,6 +879,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let changeDurationItem = NSMenuItem(title: "미리보기 표시시간 변경...", action: #selector(openDurationWindow), keyEquivalent: "")
         changeDurationItem.target = self
         menu.addItem(changeDurationItem)
+        let holdMode = PreviewOverlay.isHoldMode()
+        previewModeItem = NSMenuItem(title: "미리보기 모드: \(holdMode ? "누르는 동안" : "타이머")", action: #selector(togglePreviewMode), keyEquivalent: "")
+        previewModeItem.target = self
+        menu.addItem(previewModeItem)
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "종료", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         statusItem.menu = menu
@@ -894,13 +915,30 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
             guard let self = self else { return }
+            let currentFlags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+
             let state = NavState.shared
             if state.isNavigating {
                 let requiredFlags = self.hotKeyConfig.cocoaModifierFlags()
-                let currentFlags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
                 if !currentFlags.contains(requiredFlags) {
                     DispatchQueue.main.async { selectCurrentNotification() }
                 }
+            }
+
+        }
+
+        // 홀드 모드: 키/modifier 릴리즈 폴링 감지
+        Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            let overlay = PreviewOverlay.shared
+            guard PreviewOverlay.isHoldMode(), !overlay.windows.isEmpty else { return }
+            // 표시 직후에는 체크하지 않음 (Carbon이 키 상태를 소비하는 시간 보호)
+            guard let showTime = overlay.showTime, Date().timeIntervalSince(showTime) > 0.1 else { return }
+            let keyCode = CGKeyCode(self.previewHotKeyConfig.keyCode)
+            let keyHeld = CGEventSource.keyState(.hidSystemState, key: keyCode)
+            let modHeld = NSEvent.modifierFlags.contains(self.previewHotKeyConfig.cocoaModifierFlags())
+            if !keyHeld || !modHeld {
+                DispatchQueue.main.async { overlay.hide() }
             }
         }
 
@@ -945,6 +983,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let hotKeyID = EventHotKeyID(signature: OSType(0x4E434C4B), id: 4)
         RegisterEventHotKey(previewHotKeyConfig.keyCode, previewHotKeyConfig.modifier, hotKeyID, GetApplicationEventTarget(), 0, &previewHotKeyRef)
         log("미리보기 HotKey 등록: \(previewHotKeyConfig.displayString())")
+    }
+
+    @objc func togglePreviewMode() {
+        let newMode = !PreviewOverlay.isHoldMode()
+        PreviewOverlay.setHoldMode(newMode)
+        previewModeItem.title = "미리보기 모드: \(newMode ? "누르는 동안" : "타이머")"
+        log("미리보기 모드 변경: \(newMode ? "홀드" : "타이머")")
     }
 
     @objc func openDurationWindow() {
